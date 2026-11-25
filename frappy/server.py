@@ -61,6 +61,7 @@ class Server:
     INTERFACES = {
         'tcp': 'frappy.protocol.interface.tcp.TCPServer',
         'ws': 'frappy.protocol.interface.ws.WSServer',
+        'mqtt': 'frappy.protocol.interface.mqtt.MQTTServer',
     }
     _restart = True
 

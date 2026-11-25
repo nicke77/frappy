@@ -35,6 +35,7 @@ from frappy.errors import HardwareError, SECoPError, WrongTypeError, \
     make_secop_error
 from frappy.lib import mkthread
 from frappy.lib.asynconn import AsynConn, ConnectionClosed
+from frappy.mqtt import is_mqtt_uri
 from frappy.protocol.interface import decode_msg, encode_msg_frame
 from frappy.protocol.messages import COMMANDREQUEST, DESCRIPTIONREQUEST, \
     ENABLEEVENTSREQUEST, ERRORPREFIX, EVENTREPLY, HEARTBEATREQUEST, \
@@ -322,7 +323,10 @@ class SecopClient(ProxyClient):
     def __init__(self, uri, log=Logger):
         """initialize SecopClient
 
-        :param uri: the uri to connect to
+        :param uri: the uri to connect to.
+                    ``mqtt://host[:port]/<equipment_id>`` uses the MQTT topic
+                    mapping from the structure report.  ``?topic=`` overrides
+                    the structure topic.
         :param log: a logger.
                     when not given, the print command is used for messages with at least info level.
                     when None, nothing is logged at all
@@ -332,6 +336,7 @@ class SecopClient(ProxyClient):
         # there can only be one entry per thread calling 'request'
         self.active_requests = {}
         self.io = None
+        self._mqtt = None
         self.txq = queue.Queue(30)   # queue for tx requests
         self.pending = queue.Queue(30)  # requests with colliding action + ident
         self.log = log or NullLogger
@@ -357,6 +362,10 @@ class SecopClient(ProxyClient):
 
         if a <try_period> is given, repeat trying for the given time (sec)
         """
+        if is_mqtt_uri(self.uri):
+            # imported here so the TCP client does not load the MQTT session
+            from frappy.client.mqttclient import connect_mqtt
+            return connect_mqtt(self, try_period)
         with self._lock:
             if self.io:
                 return
@@ -563,6 +572,10 @@ class SecopClient(ProxyClient):
         self._connthread = None
 
     def disconnect(self, shutdown=True):
+        session = getattr(self, '_mqtt', None)
+        if session is not None:
+            self._mqtt = None
+            session.close()
         self._running = False
         if shutdown:
             self._shutdown.set()
@@ -698,6 +711,9 @@ class SecopClient(ProxyClient):
 
         and wait for reply
         """
+        if is_mqtt_uri(self.uri):
+            from frappy.client.mqttclient import mqtt_request
+            return mqtt_request(self, action, ident, data)
         entry = self.queue_request(action, ident, data)
         return self.get_reply(entry)
 

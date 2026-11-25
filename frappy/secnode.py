@@ -26,6 +26,8 @@ from frappy.dynamic import Pinata
 from frappy.errors import NoSuchModuleError, NoSuchParameterError, SECoPError, \
     ConfigError, ProgrammingError
 from frappy.lib import get_class, generalConfig
+from frappy.mqtt import normalize_accessible_mqtt, normalize_node_mqtt
+from frappy.params import Command
 from frappy.version import get_version
 from frappy.modules import Module
 
@@ -180,13 +182,34 @@ class SecNode:
                     self.error_count += 1
                     modobj.logError(e)
 
+    def _mqtt_enabled(self):
+        """True when this node is configured with an ``mqtt://`` interface."""
+        uris = []
+        interface = self.nodeprops.get('interface')
+        if interface:
+            uris.append(str(interface))
+        secondary = self.nodeprops.get('secondary') or []
+        if isinstance(secondary, str):
+            secondary = [secondary]
+        uris.extend(str(item) for item in secondary)
+        return any(uri.startswith('mqtt://') for uri in uris)
+
     def export_accessibles(self, modobj):
         self.log.debug('export_accessibles(%r)', modobj.name)
         # omit export=False params!
         res = OrderedDict()
+        mqtt_enabled = self._mqtt_enabled()
         for aobj in modobj.accessibles.values():
             if aobj.export:
-                res[aobj.export] = aobj.for_export()
+                exported = aobj.for_export()
+                if mqtt_enabled and 'MQTT' not in exported:
+                    exported['MQTT'] = {}
+                if 'MQTT' in exported:
+                    exported['MQTT'] = normalize_accessible_mqtt(
+                        exported['MQTT'], self.equipment_id, modobj.name, aobj.export,
+                        readonly=bool(getattr(aobj, 'readonly', False)),
+                        is_command=isinstance(aobj, Command))
+                res[aobj.export] = exported
         self.log.debug('list accessibles for module %s -> %r',
                        modobj.name, res)
         return res
@@ -206,6 +229,9 @@ class SecNode:
         result['equipment_id'] = self.equipment_id
         result['firmware'] = 'FRAPPY ' + get_version()
         result['description'] = self.nodeprops['description']
+        if self._mqtt_enabled() or self.nodeprops.get('MQTT') is not None:
+            result['MQTT'] = normalize_node_mqtt(
+                self.nodeprops.get('MQTT') or {}, self.equipment_id)
         for prop, propvalue in self.nodeprops.items():
             if prop.startswith('_'):
                 result[prop] = propvalue

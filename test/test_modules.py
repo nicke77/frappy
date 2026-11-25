@@ -252,7 +252,7 @@ def test_ModuleMagic():
         'group', 'export', 'relative_resolution',
         'visibility', 'unit', 'default', 'value', 'datatype', 'fmtstr',
         'absolute_resolution', 'max', 'min', 'readonly', 'constant',
-        'description', 'needscfg', 'update_unchanged', 'influences'}
+        'description', 'needscfg', 'update_unchanged', 'influences', 'MQTT'}
 
     # check on the level of classes
     # this checks Newclass1 too, as it is inherited by Newclass2

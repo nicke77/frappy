@@ -57,6 +57,7 @@ setup(
         "mlzlog",
         "psutil",
         "python-daemon",
+        "paho-mqtt>=1.6",
     ],
 
     data_files=[

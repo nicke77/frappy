@@ -7,6 +7,8 @@ psutil
 python-daemon >=2.0
 # websocket interface:
 websockets>=11.0
+# MQTT client (RFC-108/109):
+paho-mqtt>=1.6
 # for zmq interface
 #pyzmq>=13.1.0
 #for ppms on windows

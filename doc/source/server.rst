@@ -16,7 +16,9 @@ a description of the SEC node and the server interface uri. Example:
          'a description of the SEC node',
          interface = 'tcp://5000')
 
-For the interface scheme currently only tcp is supported.
+The interface scheme is ``tcp``, ``ws``, or ``mqtt``.
+``mqtt://host:port`` connects to a broker and publishes the structure report
+and the live values.
 When the TCP port is given as an argument of the server start script, **interface** is not
 needed or ignored. The main information is the port number, in this example 5000.
 

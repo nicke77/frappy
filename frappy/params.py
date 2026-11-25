@@ -28,6 +28,7 @@ from frappy.datatypes import ArrayOf, BoolType, CommandType, DataType, \
     StructOf, TextType, TupleOf, ValueType, visibility_validator
 from frappy.errors import BadValueError, ProgrammingError, WrongTypeError
 from frappy.lib import generalConfig
+from frappy.mqtt import MQTTMapping
 from frappy.properties import HasProperties, Property
 
 generalConfig.set_default('tolerate_poll_property', False)
@@ -47,6 +48,13 @@ class Accessible(HasProperties):
 
     ownProperties = None
     optional = False
+    MQTT = Property(
+        'optional MQTT topic mapping',
+        MQTTMapping(),
+        extname='MQTT',
+        export=True,
+        default=None,
+        mandatory=False)
 
     def init(self, kwds):
         # do not use self.propertyValues.update here, as no invalid values should be
