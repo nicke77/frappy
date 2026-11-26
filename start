@@ -1,0 +1,20 @@
+#!/bin/sh
+# Start the cryo SEC node and the Frappy GUI.
+# The node publishes on the MQTT broker at localhost:1883.
+# An illegal change is reported on frappy_demo_node/cryo/<accessible>/error
+# for example: mosquitto_sub -t frappy_demo_node/cryo/target/error
+cd "$(dirname "$0")" || exit 1
+mkdir -p log pid
+
+.venv/bin/python bin/frappy-server frappy_demo_node &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null; wait "$server_pid" 2>/dev/null' EXIT INT TERM
+
+# The GUI connects once, so wait until the node is still running.
+sleep 2
+if ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "SEC node failed to start" >&2
+    exit 1
+fi
+
+.venv/bin/python bin/frappy-gui 'mqtt://localhost:1883/frappy_demo_node'
