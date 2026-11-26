@@ -25,5 +25,4 @@ doc/_build
 # pyinstaller
 dist/
 
-start
 .venv
