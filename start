@@ -8,7 +8,6 @@ mkdir -p log pid
 
 .venv/bin/python bin/frappy-server frappy_demo_node &
 server_pid=$!
-trap 'kill "$server_pid" 2>/dev/null; wait "$server_pid" 2>/dev/null' EXIT INT TERM
 
 # The GUI connects once, so wait until the node is still running.
 sleep 2
@@ -17,4 +16,9 @@ if ! kill -0 "$server_pid" 2>/dev/null; then
     exit 1
 fi
 
-.venv/bin/python bin/frappy-gui 'mqtt://localhost:1883/frappy_demo_node'
+.venv/bin/python bin/frappy-gui 'mqtt://localhost:1883/frappy_demo_node' &
+gui_pid=$!
+# dash does not interrupt wait on SIGINT. sleep returns, then the trap runs.
+while kill -0 "$gui_pid" 2>/dev/null; do
+    sleep 0.2
+done

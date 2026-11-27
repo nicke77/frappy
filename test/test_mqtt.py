@@ -31,9 +31,11 @@ from frappy.errors import BadValueError, ConfigError, HardwareError, NoSuchParam
     ProgrammingError, ReadOnlyError
 from frappy.lib import generalConfig
 from frappy.modulebase import HasAccessibles, Module
-from frappy.mqtt import MQTTMapping, PathMiss, compile_json_path, decode_value_payload, \
-    encode_set_payload, error_report, evaluate_json_path, normalize_accessible_mqtt, \
-    normalize_node_mqtt, parse_mqtt_uri, validate_mqtt_mapping
+from frappy.mqtt import MQTTMapping, PathMiss, classify_structure_payload, \
+    compile_json_path, decode_value_payload, encode_set_payload, \
+    equipment_id_from_structure_topic, error_report, evaluate_json_path, \
+    normalize_accessible_mqtt, normalize_node_mqtt, parse_mqtt_uri, \
+    validate_mqtt_mapping
 from frappy.params import Command, Parameter
 from frappy.protocol.interface.mqtt import MQTTServer
 from frappy.protocol.messages import DESCRIPTIONREPLY, DESCRIPTIONREQUEST, \
@@ -75,14 +77,23 @@ class FakeBroker:
         self.on_publish = None
 
     def publish(self, topic, payload, retain=False):
-        encoded = json.dumps(payload).encode('utf-8')
+        self._emit(topic, json.dumps(payload).encode('utf-8'), payload, retain)
+
+    def publish_raw(self, topic, payload, retain=False):
+        encoded = payload if isinstance(payload, (bytes, bytearray)) else payload.encode('utf-8')
+        self._emit(topic, encoded, payload, retain)
+
+    def _emit(self, topic, encoded, logged, retain):
         if retain:
-            self.retained[topic] = encoded
-        self.published.append((topic, payload, retain))
+            if encoded == b'':
+                self.retained.pop(topic, None)
+            else:
+                self.retained[topic] = encoded
+        self.published.append((topic, logged, retain))
         for callback in list(self.subscribers.get(topic, ())):
             callback(topic, encoded)
         if self.on_publish:
-            self.on_publish(topic, payload, retain)
+            self.on_publish(topic, logged, retain)
 
 
 class FakeTransport:
@@ -116,6 +127,9 @@ class FakeTransport:
 
     def publish(self, topic, payload, retain=False):
         self.broker.publish(topic, payload, retain)
+
+    def publish_raw(self, topic, payload, retain=False):
+        self.broker.publish_raw(topic, payload, retain)
 
     def connected(self):
         return self._connected
@@ -648,6 +662,72 @@ Mod('guarded', 'frappy.modules.Readable', 'guarded',
         assert _published(broker, start, 'eq/guarded/value') == []
     finally:
         mqtt.shutdown()
+
+
+def test_structure_payload_empty_withdraws_and_null_does_not():
+    assert classify_structure_payload(b'') == 'withdraw'
+    assert classify_structure_payload('') == 'withdraw'
+    assert classify_structure_payload(b'null') is None
+    assert classify_structure_payload('null') is None
+    assert classify_structure_payload(None) is None
+    assert classify_structure_payload(b'"null"') is None
+    assert classify_structure_payload(b'[]') is None
+    assert equipment_id_from_structure_topic('SECoP/structures/frappy_demo_node') == (
+        'frappy_demo_node')
+    assert equipment_id_from_structure_topic('SECoP/structures/frappy_demo_node/get') is None
+
+
+def test_client_structure_withdrawn_by_empty_payload():
+    client, broker = _connect()
+    try:
+        broker.publish('SECoP/structures/test_node', None, retain=True)
+        assert client.state == 'connected'
+        assert client.online is True
+        broker.publish_raw('SECoP/structures/test_node', b'', retain=True)
+        assert client.state == 'withdrawn'
+        assert client.online is False
+        assert 'SECoP/structures/test_node' not in broker.retained
+    finally:
+        client.disconnect()
+
+
+def test_client_retained_null_is_not_a_structure():
+    broker = FakeBroker()
+    transport = FakeTransport(broker)
+    broker.retained['SECoP/structures/test_node'] = b'null'
+    client = SecopClient('mqtt://localhost/test_node', LoggerStub())
+    client._mqtt_transport = transport
+    with pytest.raises(TimeoutError):
+        client.connect(try_period=0.05)
+    client.disconnect()
+
+    broker = FakeBroker()
+    transport = FakeTransport(broker)
+    broker.retained['SECoP/structures/test_node'] = b''
+    client = SecopClient('mqtt://localhost/test_node', LoggerStub())
+    client._mqtt_transport = transport
+    with pytest.raises(TimeoutError):
+        client.connect(try_period=0.05)
+    client.disconnect()
+
+
+def test_server_withdraws_structure_on_shutdown(tmp_path):
+    server = _server(tmp_path, """
+Node('eq', 'mqtt node', 'tcp://10769', secondary=['mqtt://localhost:1883'])
+Mod('cryo', 'frappy.modules.Readable', 'cryo')
+""")
+    broker = FakeBroker()
+    transport = FakeTransport(broker)
+    mqtt = MQTTServer('mqtt', LoggerStub(), {
+        'uri': 'mqtt://localhost:1883',
+        'transport': transport,
+    }, server)
+    assert 'SECoP/structures/eq' in broker.retained
+    mqtt.shutdown()
+    withdrawal = [item for item in broker.published if item[0] == 'SECoP/structures/eq']
+    assert withdrawal[-1] == ('SECoP/structures/eq', b'', True)
+    assert all(item[1] != b'' for item in withdrawal[:-1])
+    assert 'SECoP/structures/eq' not in broker.retained
 
 
 def test_client_bad_structure_times_out():

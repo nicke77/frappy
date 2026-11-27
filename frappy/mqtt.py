@@ -24,6 +24,7 @@ This module validates the ``MQTT`` object stored in the structure report and
 decodes publications for the client.
 """
 
+import json
 import re
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -48,6 +49,11 @@ class PathMiss(Exception):
     """A JSON path did not select a node."""
 
 
+# One topic level under this prefix is a SEC node's default structure topic.
+DISCOVERY_STRUCTURE_TOPIC = 'SECoP/structures/+'
+_STRUCTURE_TOPIC_PREFIX = 'SECoP/structures/'
+
+
 def default_node_value_topic(equipment_id):
     return f'SECoP/structures/{equipment_id}'
 
@@ -58,6 +64,46 @@ def default_node_get_topic(equipment_id):
 
 def default_accessible_value_topic(equipment_id, module, accessible):
     return f'{equipment_id}/{module}/{accessible}'
+
+
+def equipment_id_from_structure_topic(topic):
+    """Return the equipment id for a default structure topic.
+
+    ``SECoP/structures/<equipment_id>`` matches.  A get topic, or any topic
+    with a further slash, does not.
+    """
+    if not isinstance(topic, str) or not topic.startswith(_STRUCTURE_TOPIC_PREFIX):
+        return None
+    equipment_id = topic[len(_STRUCTURE_TOPIC_PREFIX):]
+    if not equipment_id or '/' in equipment_id:
+        return None
+    return equipment_id
+
+
+def classify_structure_payload(payload):
+    """Classify a publication on a structure topic.
+
+    A zero-length payload withdraws the node.  That is the MQTT deletion of a
+    retained message, not a JSON value.  JSON ``null`` is ignored here.  A
+    JSON object with a ``modules`` object is a structure report.
+    """
+    if isinstance(payload, (bytes, bytearray)):
+        if len(payload) == 0:
+            return 'withdraw'
+        try:
+            payload = payload.decode('utf-8')
+        except UnicodeError:
+            return None
+    if isinstance(payload, str):
+        if payload == '':
+            return 'withdraw'
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(payload, dict) and isinstance(payload.get('modules'), dict):
+        return payload
+    return None
 
 
 def is_mqtt_uri(uri):

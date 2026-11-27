@@ -32,7 +32,7 @@ from threading import Event
 
 from frappy.client.mqttclient import PahoTransport
 from frappy.errors import ConfigError, SECoPError
-from frappy.mqtt import decode_value_payload, parse_mqtt_uri
+from frappy.mqtt import classify_structure_payload, decode_value_payload, parse_mqtt_uri
 from frappy.protocol.messages import COMMANDREPLY, COMMANDREQUEST, \
     EVENTREPLY, READREPLY, READREQUEST, WRITEREPLY, WRITEREQUEST
 
@@ -72,6 +72,7 @@ class MQTTServer:
         self._patched = False
         self._stopped = Event()
         self._closed = False
+        self.structure_topic = None
         try:
             self.open()
         except Exception:
@@ -105,6 +106,7 @@ class MQTTServer:
             return
         self._closed = True
         self._stopped.set()
+        self._withdraw_structure()
         if self._patched:
             self.dispatcher.handle_change = self._orig_change
             self.dispatcher.handle_do = self._orig_do
@@ -183,8 +185,26 @@ class MQTTServer:
     def _publish_structure(self):
         description = self.secnode.get_descriptive_data('')
         topic = (description.get('MQTT') or {}).get('value_topic')
+        self.structure_topic = topic
         if topic:
             self._publish(topic, description, retain=True)
+
+    def _withdraw_structure(self):
+        """Delete the retained structure with a zero-length retained payload.
+
+        Connected subscribers receive the empty publication and drop the node.
+        The broker then holds no structure, so a later subscriber does not
+        revive it.  A publisher that dies without this publication leaves the
+        retained structure in place.
+        """
+        topic = self.structure_topic
+        transport = self.transport
+        if not topic or transport is None:
+            return
+        try:
+            transport.publish_raw(topic, b'', retain=True)
+        except Exception:
+            self.log.exception('failed to clear retained structure')
 
     def _publish_bare_set(self, specifier, argument):
         binding = self.by_ident.get(specifier)
@@ -240,6 +260,8 @@ class MQTTServer:
         self._publish(binding['value_topic'], report, retain=False)
 
     def _on_message(self, topic, payload):
+        if topic == self.structure_topic and classify_structure_payload(payload) == 'withdraw':
+            return
         try:
             data = _parse_payload(payload)
         except (UnicodeError, json.JSONDecodeError, TypeError) as exc:

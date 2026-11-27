@@ -11,7 +11,9 @@ Summary
 
 This document proposes an optional ``MQTT`` object in the structure report.
 The object maps SECoP accessibles onto MQTT topics.  It names the topics for
-the structure report and for the live values of its accessibles.
+the structure report and for the live values of its accessibles.  A client
+finds the SEC nodes that are present by subscribing to those structure
+topics, and removes a node when its structure topic is withdrawn.
 
 SECoP addresses a value by a module and an accessible.  MQTT addresses a
 value by a topic.  The ``MQTT`` object records that correspondence.  SECoP
@@ -184,6 +186,50 @@ the value in that report.
 ``get_topic`` of the SEC node triggers ``describe`` for that
 ``equipment_id``.
 
+Presence of a SEC node
+----------------------
+
+The default structure topic is one level,
+``SECoP/structures/<equipment_id>``.  The equipment id contains no ``/``.
+An ECS discovers which nodes are present by subscribing to
+
+::
+
+    SECoP/structures/+
+
+The ``+`` is a single MQTT topic level.  It matches
+``SECoP/structures/frappy_demo_node`` and does not match
+``SECoP/structures/frappy_demo_node/get``.  On subscribe, the broker delivers
+each retained structure report.  Later publications on those topics arrive
+the same way.
+
+A JSON object that contains a ``modules`` object is a structure report.  The
+node is present.  The publisher sends it with the retain flag set.  The
+broker stores that one message and delivers it to a subscriber that connects
+later, so the subscriber learns the nodes that are already up without
+waiting for the next publication.
+
+The node is no longer present when that same topic carries a zero-length
+payload, also with the retain flag set.  The payload has no bytes.  It is
+not JSON, and it is not the JSON ``null`` used for an absent ``get_topic``,
+``set_topic``, or ``error_topic``.  MQTT 3.1.1 treats a retained message
+with a zero-length payload as a deletion of the retained message.  A
+subscriber that is already connected receives that empty publication and
+removes the node.  The broker then holds nothing for the topic, so a
+subscriber that connects afterwards does not revive the node.  A SEC node
+sends this on its structure ``value_topic`` before it disconnects.
+
+This only works when the publisher shuts down cleanly.  If the process
+stops without sending the zero-length payload, the broker keeps the last
+structure report until some other client deletes it.  Subscribers that are
+connected, and subscribers that connect later, still see a node that is
+gone.
+
+A node whose structure ``value_topic`` is not
+``SECoP/structures/<equipment_id>`` is not found by the ``+`` subscription.
+A client that already knows that topic still treats a zero-length payload
+on it as withdrawal.
+
 Specification changes
 ---------------------
 
@@ -191,11 +237,16 @@ If this RFC is accepted, the specification changes are:
 
 - ``protocol/specification/descriptive.rst``: ``MQTT`` as an optional SEC-node
   property and as an optional accessible property, with ``value_topic``,
-  ``get_topic``, ``set_topic``, and ``error_topic``.
+  ``get_topic``, ``set_topic``, and ``error_topic``.  State that a client
+  discovers nodes on ``SECoP/structures/+``, that the structure report is
+  retained, and that a zero-length retained payload on that topic withdraws
+  the node.
 - ``protocol/specification/transport.rst``: a short pointer that the ``MQTT``
   property maps accessibles onto MQTT topics, and that SECoP messages and
   MQTT publications are both carried over TCP or WebSocket.
-  The SECoP messages themselves are unchanged.
+  The SECoP messages themselves are unchanged.  State that withdrawal is a
+  zero-length retained payload, and that a structure left behind by a
+  publisher that did not shut down cleanly stays until it is deleted.
 - ``protocol/specification/changes.rst``: one backwards-compatible bullet
   under Version 2.0.
 
@@ -216,7 +267,31 @@ be renamed to ``data`` to match the data report.  ``get_topic`` could be
 renamed to ``get`` or ``read`` to match the read message.  ``set_topic``
 could be renamed to ``set`` or ``change`` to match the change message.
 
+Discovery sees only the default structure topics.  A node that sets a
+different ``value_topic`` does not appear on ``SECoP/structures/+``.
+
 
 Open Questions
 ==============
+
+Should a node that sets its own structure ``value_topic`` also publish the
+same report on ``SECoP/structures/<equipment_id>``, so discovery still finds
+it?
+
+A retained structure stays on the broker when the publisher does not shut
+down cleanly.  One remedy is to publish the structure report at a fixed
+interval without the retain flag.  A subscriber that has not seen a new
+report within that interval removes the node.  Nothing is left on the broker
+for a later subscriber to revive, and a crash stops the publications by
+itself.  A subscriber that connects between publications has to wait for the
+next one before it learns that the node exists.
+
+The text above specifies the retained report and the zero-length deletion.
+The periodic non-retained report is not specified.  Supporting both at once
+is possible: retain the report for a late subscriber, and also repeat it
+without the retain flag so silence still means the node is gone.  A client
+then has two signals for one fact, a deletion and a timeout, and a publisher
+has to send both.  That is more machinery than either scheme alone.  Whether
+the silence rule should replace the retained deletion, or stand beside it,
+is open.
 

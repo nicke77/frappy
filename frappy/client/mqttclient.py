@@ -32,9 +32,9 @@ from threading import Event, RLock
 
 from frappy.errors import HardwareError, NoSuchCommandError, NoSuchModuleError, \
     NoSuchParameterError, ProtocolError, ReadOnlyError, make_secop_error
-from frappy.mqtt import decode_value_payload, default_node_get_topic, \
-    encode_set_payload, error_report, normalize_accessible_mqtt, \
-    normalize_node_mqtt, parse_mqtt_uri
+from frappy.mqtt import classify_structure_payload, decode_value_payload, \
+    default_node_get_topic, encode_set_payload, error_report, \
+    normalize_accessible_mqtt, normalize_node_mqtt, parse_mqtt_uri
 from frappy.protocol.messages import COMMANDREPLY, COMMANDREQUEST, \
     DESCRIPTIONREPLY, DESCRIPTIONREQUEST, DISABLEEVENTSREPLY, \
     DISABLEEVENTSREQUEST, ENABLEEVENTSREPLY, ENABLEEVENTSREQUEST, \
@@ -245,13 +245,20 @@ class MqttSession:
         raise NoSuchParameterError(f'{ident} has no MQTT mapping')
 
     def _on_message(self, topic, payload):
+        if topic in self.structure_topics:
+            kind = classify_structure_payload(payload)
+            if kind == 'withdraw':
+                self._on_withdrawn()
+                return
+            if isinstance(kind, dict):
+                self._on_structure(kind)
+                return
+            self.client.log.warning('ignored MQTT structure payload on %s', topic)
+            return
         try:
             data = _parse_payload(payload)
         except (UnicodeError, json.JSONDecodeError, TypeError) as exc:
             self.client.log.warning('ignored non-JSON MQTT payload on %s (%s)', topic, exc)
-            return
-        if topic in self.structure_topics:
-            self._on_structure(data)
             return
         updates, events = self._take_errors(topic, data)
         value_updates, value_events = self._take_updates(topic, data)
@@ -281,7 +288,24 @@ class MqttSession:
                     self._apply_structure(data)
                 except Exception as exc:
                     self.client.log.warning('ignored MQTT structure update (%s)', exc)
+                    self.structure_event.set()
+                    return
+            if self.client.state == 'withdrawn' and not self.closed:
+                with self.client._lock:
+                    self.client._set_state(True, 'connected')
         self.structure_event.set()
+
+    def _on_withdrawn(self):
+        """A zero-length payload removed this retained structure."""
+        with self.lock:
+            self.structure = None
+            started = self.started
+        self.structure_event.set()
+        if not started or self.closed:
+            return
+        with self.client._lock:
+            if not self.closed:
+                self.client._set_state(False, 'withdrawn')
 
     def _apply_structure(self, data):
         self.client._init_descriptive_data(data)
@@ -466,6 +490,7 @@ class PahoTransport:
         self._client = None
         self._connected = Event()
         self._connect_error = None
+        self._subscriptions = set()
 
     def start(self, on_message):
         try:
@@ -476,6 +501,8 @@ class PahoTransport:
         def handle_connect(_client, _userdata, _flags, reason_code, _properties=None):
             if _reason_ok(reason_code):
                 self._connected.set()
+                for topic in list(self._subscriptions):
+                    _client.subscribe(topic)
             else:
                 self._connect_error = reason_code
 
@@ -507,6 +534,9 @@ class PahoTransport:
             raise TimeoutError('mqtt connect timed out')
 
     def subscribe(self, topic):
+        self._subscriptions.add(topic)
+        if self._client is None:
+            return
         result, _mid = self._client.subscribe(topic)
         if result != 0:
             raise ConnectionError(f'mqtt subscribe {topic} failed ({result})')
@@ -516,7 +546,16 @@ class PahoTransport:
             self._client.unsubscribe(topic)
 
     def publish(self, topic, payload, retain=False):
+        """Publish ``payload`` as JSON.  ``None`` is the JSON value null."""
         info = self._client.publish(topic, json.dumps(payload), retain=retain)
+        if info.rc != 0:
+            raise ConnectionError(f'mqtt publish {topic} failed ({info.rc})')
+
+    def publish_raw(self, topic, payload, retain=False):
+        """Publish exact bytes.  Empty bytes with retain clear the retained message."""
+        if isinstance(payload, str):
+            payload = payload.encode('utf-8')
+        info = self._client.publish(topic, payload, retain=retain)
         if info.rc != 0:
             raise ConnectionError(f'mqtt publish {topic} failed ({info.rc})')
 
